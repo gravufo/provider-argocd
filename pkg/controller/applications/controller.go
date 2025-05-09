@@ -122,6 +122,9 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
 	appQuery := application.ApplicationQuery{
 		Name: &name,
+		Projects: []string{
+			cr.Spec.ForProvider.Project,
+		},
 	}
 
 	// we have to use List() because Get() returns permission error
@@ -130,15 +133,15 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 	if err != nil {
 		return managed.ExternalObservation{}, errors.Wrap(err, errListFailed)
 	}
+	if len(apps.Items) == 1 {
+
+	} else if len(apps.Items) > 1 {
+		return managed.ExternalObservation{}, errors.New("multiple applications found with the same name and project")
+	} else {
+		return managed.ExternalObservation{ResourceExists: false}, nil
+	}
 	app := &argocdv1alpha1.Application{}
-	for _, item := range apps.Items {
-		if item.Name == name && item.Spec.Project == cr.Spec.ForProvider.Project {
-			app = item.DeepCopy()
-		}
-	}
-	if app.Name == "" {
-		return managed.ExternalObservation{}, nil
-	}
+	app = apps.Items[0].DeepCopy()
 
 	current := cr.Spec.ForProvider.DeepCopy()
 	lateInitialize(&cr.Spec.ForProvider, app)
