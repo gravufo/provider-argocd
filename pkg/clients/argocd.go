@@ -35,10 +35,6 @@ import (
 	"github.com/crossplane-contrib/provider-argocd/apis/v1alpha1"
 )
 
-var (
-	credentialsSourceAzureWorkloadIdentity xpv1.CredentialsSource = "AzureWorkloadIdentity"
-)
-
 // NewClient creates new argocd Client with provided argocd Configurations/Credentials.
 func NewClient(opts *argocd.ClientOptions) *argocd.Client {
 	var cl argocd.Client
@@ -116,7 +112,7 @@ func authFromCredentials(ctx context.Context, c client.Client, creds v1alpha1.Pr
 			return "", errors.Wrap(err, "cannot read credentials file")
 		}
 		return string(token), nil
-	case credentialsSourceAzureWorkloadIdentity:
+	case v1alpha1.CredentialsSourceAzureWorkloadIdentity:
 		options := &azidentity.WorkloadIdentityCredentialOptions{}
 		if creds.AzureWorkloadIdentityOptions != nil {
 			if creds.AzureWorkloadIdentityOptions.ClientID != nil {

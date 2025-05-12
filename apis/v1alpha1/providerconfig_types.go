@@ -21,6 +21,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+var (
+	CredentialsSourceAzureWorkloadIdentity xpv1.CredentialsSource = "AzureWorkloadIdentity"
+)
+
 // A ProviderConfigSpec defines the desired state of a ProviderConfig.
 type ProviderConfigSpec struct {
 	// ServerAddr is the hostname or IP of the argocd instance
