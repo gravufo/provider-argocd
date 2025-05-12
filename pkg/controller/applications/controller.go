@@ -125,23 +125,15 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		Projects: []string{
 			cr.Spec.ForProvider.Project,
 		},
+		AppNamespace: &cr.Spec.ForProvider.AppNamespace,
 	}
 
 	// we have to use List() because Get() returns permission error
-	var apps *argocdv1alpha1.ApplicationList
-	apps, err := e.client.List(ctx, &appQuery)
+	var app *argocdv1alpha1.Application
+	app, err := e.client.Get(ctx, &appQuery)
 	if err != nil {
 		return managed.ExternalObservation{}, errors.Wrap(err, errListFailed)
 	}
-	if len(apps.Items) == 1 {
-
-	} else if len(apps.Items) > 1 {
-		return managed.ExternalObservation{}, errors.New("multiple applications found with the same name and project")
-	} else {
-		return managed.ExternalObservation{ResourceExists: false}, nil
-	}
-	app := &argocdv1alpha1.Application{}
-	app = apps.Items[0].DeepCopy()
 
 	current := cr.Spec.ForProvider.DeepCopy()
 	lateInitialize(&cr.Spec.ForProvider, app)
