@@ -94,10 +94,12 @@ func SetupApplication(mgr ctrl.Manager, o xpcontroller.Options) error {
 			opts...))
 }
 
+var argoClients map[string]applications.ServiceClient = make(map[string]applications.ServiceClient)
+
 type connector struct {
 	kube              client.Client
 	newArgocdClientFn func(clientOpts *apiclient.ClientOptions) (io.Closer, applications.ServiceClient)
-	conn              io.Closer
+	// conn              io.Closer
 }
 
 func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.ExternalClient, error) {
@@ -110,13 +112,17 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 		return nil, err
 	}
 
-	conn, argocdClient := c.newArgocdClientFn(cfg)
-	c.conn = conn
-	return &external{kube: c.kube, client: argocdClient}, nil
+	if _, ok := argoClients[cr.Spec.ProviderConfigReference.Name]; !ok {
+		_, argoClients[cr.Spec.ProviderConfigReference.Name] = c.newArgocdClientFn(cfg)
+	}
+
+	// c.conn = conn
+	return &external{kube: c.kube, client: argoClients[cr.Spec.ProviderConfigReference.Name]}, nil
 }
 
 func (c *connector) Disconnect(ctx context.Context) error {
-	return c.conn.Close()
+	// return c.conn.Close()
+	return nil
 }
 
 type external struct {
