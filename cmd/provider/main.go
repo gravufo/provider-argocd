@@ -25,10 +25,14 @@ import (
 	"github.com/crossplane/crossplane-runtime/pkg/feature"
 	"github.com/crossplane/crossplane-runtime/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/pkg/ratelimiter"
+	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
+	"github.com/crossplane/crossplane-runtime/pkg/statemetrics"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/crossplane-contrib/provider-argocd/apis"
 	"github.com/crossplane-contrib/provider-argocd/pkg/controller"
@@ -41,6 +45,7 @@ func main() {
 		debug                    = app.Flag("debug", "Run with debug logging.").Short('d').Bool()
 		syncInterval             = app.Flag("sync", "Sync interval controls how often all resources will be double checked for drift.").Short('s').Default("1h").Duration()
 		leaderElection           = app.Flag("leader-election", "Use leader election for the conroller manager.").Short('l').Default("false").OverrideDefaultFromEnvar("LEADER_ELECTION").Bool()
+		pollStateMetricInterval  = app.Flag("poll-state-metric", "State metric recording interval").Default("5s").Duration()
 		enableManagementPolicies = app.Flag("enable-management-policies", "Enable support for Management Policies.").Default("false").Envar("ENABLE_MANAGEMENT_POLICIES").Bool()
 		maxReconcileRate         = app.Flag("max-reconcile-rate", "The global maximum rate per second at which resources may checked for drift from the desired state.").Default("10").Int()
 		pollInterval             = app.Flag("poll", "Poll interval controls how often an individual resource should be checked for drift.").Default("1m").Duration()
@@ -62,6 +67,9 @@ func main() {
 	kingpin.FatalIfError(err, "Cannot get API server rest config")
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Cache: cache.Options{
+			SyncPeriod: syncInterval,
+		},
 		// controller-runtime uses both ConfigMaps and Leases for leader
 		// election by default. Leases expire after 15 seconds, with a
 		// 10 second renewal deadline. We've observed leader loss due to
@@ -76,12 +84,23 @@ func main() {
 		RenewDeadline:              func() *time.Duration { d := 50 * time.Second; return &d }(),
 	})
 
+	metricRecorder := managed.NewMRMetricRecorder()
+	stateMetrics := statemetrics.NewMRStateMetrics()
+
+	metrics.Registry.MustRegister(metricRecorder)
+	metrics.Registry.MustRegister(stateMetrics)
+
 	o := xpcontroller.Options{
 		Logger:                  log,
 		MaxConcurrentReconciles: *maxReconcileRate,
 		PollInterval:            *pollInterval,
 		GlobalRateLimiter:       ratelimiter.NewGlobal(*maxReconcileRate),
 		Features:                &feature.Flags{},
+		MetricOptions: &xpcontroller.MetricOptions{
+			PollStateMetricInterval: *pollStateMetricInterval,
+			MRMetrics:               metricRecorder,
+			MRStateMetrics:          stateMetrics,
+		},
 	}
 
 	if *enableManagementPolicies {
