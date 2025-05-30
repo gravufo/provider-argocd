@@ -29,6 +29,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
 	"github.com/crossplane/crossplane-runtime/pkg/resource"
+	"github.com/crossplane/crossplane-runtime/pkg/statemetrics"
 	"github.com/google/go-cmp/cmp"
 	"github.com/pkg/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -70,18 +71,35 @@ func SetupApplication(mgr ctrl.Manager, o xpcontroller.Options) error {
 		opts = append(opts, managed.WithManagementPolicies())
 	}
 
+	if o.MetricOptions != nil {
+		opts = append(opts, managed.WithMetricRecorder(o.MetricOptions.MRMetrics))
+	}
+
+	if o.MetricOptions != nil && o.MetricOptions.MRStateMetrics != nil {
+		stateMetricsRecorder := statemetrics.NewMRStateRecorder(
+			mgr.GetClient(), o.Logger, o.MetricOptions.MRStateMetrics, &v1alpha1.ApplicationList{}, o.MetricOptions.PollStateMetricInterval,
+		)
+		if err := mgr.Add(stateMetricsRecorder); err != nil {
+			return errors.Wrapf(err, "cannot register MR state metrics recorder for kind %T", &v1alpha1.ApplicationList{})
+		}
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
+		WithOptions(o.ForControllerRuntime()).
+		WithEventFilter(resource.DesiredStateChanged()).
 		For(&v1alpha1.Application{}).
 		Complete(managed.NewReconciler(mgr,
 			resource.ManagedKind(v1alpha1.ApplicationGroupVersionKind),
 			opts...))
 }
 
+var argoClients map[string]applications.ServiceClient = make(map[string]applications.ServiceClient)
+
 type connector struct {
 	kube              client.Client
 	newArgocdClientFn func(clientOpts *apiclient.ClientOptions) (io.Closer, applications.ServiceClient)
-	conn              io.Closer
+	// conn              io.Closer
 }
 
 func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.ExternalClient, error) {
@@ -94,13 +112,17 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 		return nil, err
 	}
 
-	conn, argocdClient := c.newArgocdClientFn(cfg)
-	c.conn = conn
-	return &external{kube: c.kube, client: argocdClient}, nil
+	if _, ok := argoClients[cr.Spec.ProviderConfigReference.Name]; !ok {
+		_, argoClients[cr.Spec.ProviderConfigReference.Name] = c.newArgocdClientFn(cfg)
+	}
+
+	// c.conn = conn
+	return &external{kube: c.kube, client: argoClients[cr.Spec.ProviderConfigReference.Name]}, nil
 }
 
 func (c *connector) Disconnect(ctx context.Context) error {
-	return c.conn.Close()
+	// return c.conn.Close()
+	return nil
 }
 
 type external struct {
@@ -122,6 +144,13 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
 	appQuery := application.ApplicationQuery{
 		Name: &name,
+		Projects: []string{
+			cr.Spec.ForProvider.Project,
+		},
+	}
+
+	if cr.Spec.ForProvider.AppNamespace != "" {
+		appQuery.AppNamespace = &cr.Spec.ForProvider.AppNamespace
 	}
 
 	// we have to use List() because Get() returns permission error
@@ -130,15 +159,16 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 	if err != nil {
 		return managed.ExternalObservation{}, errors.Wrap(err, errListFailed)
 	}
-	app := &argocdv1alpha1.Application{}
-	for _, item := range apps.Items {
-		if item.Name == name && item.Spec.Project == cr.Spec.ForProvider.Project {
-			app = item.DeepCopy()
-		}
+
+	if len(apps.Items) == 0 {
+		return managed.ExternalObservation{
+			ResourceExists:   false,
+			ResourceUpToDate: false,
+		}, nil
+	} else if len(apps.Items) > 1 {
+		return managed.ExternalObservation{}, errors.New("multiple applications found")
 	}
-	if app.Name == "" {
-		return managed.ExternalObservation{}, nil
-	}
+	app := &apps.Items[0]
 
 	current := cr.Spec.ForProvider.DeepCopy()
 	lateInitialize(&cr.Spec.ForProvider, app)
@@ -189,7 +219,12 @@ func (e *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
 		return managed.ExternalDelete{}, errors.New(errNotApplication)
 	}
 	query := application.ApplicationDeleteRequest{
-		Name: clients.StringToPtr(meta.GetExternalName(cr)),
+		Name:    clients.StringToPtr(meta.GetExternalName(cr)),
+		Project: &cr.Spec.ForProvider.Project,
+	}
+
+	if cr.Spec.ForProvider.AppNamespace != "" {
+		query.AppNamespace = &cr.Spec.ForProvider.AppNamespace
 	}
 
 	_, err := e.client.Delete(ctx, &query)
@@ -232,6 +267,10 @@ func generateCreateApplicationRequest(cr *v1alpha1.Application) *application.App
 		Spec: *spec,
 	}
 
+	if cr.Spec.ForProvider.AppNamespace != "" {
+		app.SetNamespace(cr.Spec.ForProvider.AppNamespace)
+	}
+
 	repoCreateRequest := &application.ApplicationCreateRequest{
 		Application: app,
 	}
@@ -252,6 +291,10 @@ func generateUpdateRepositoryOptions(cr *v1alpha1.Application) *application.Appl
 			Finalizers:  cr.Spec.ForProvider.Finalizers,
 		},
 		Spec: *spec,
+	}
+
+	if cr.Spec.ForProvider.AppNamespace != "" {
+		app.SetNamespace(cr.Spec.ForProvider.AppNamespace)
 	}
 
 	o := &application.ApplicationUpdateRequest{
