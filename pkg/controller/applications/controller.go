@@ -135,21 +135,29 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		Name: &name,
 	}
 
+	if cr.Spec.ForProvider.Project != "" {
+		appQuery.Projects = []string{cr.Spec.ForProvider.Project}
+	}
+	if cr.Spec.ForProvider.AppNamespace != "" {
+		appQuery.AppNamespace = &cr.Spec.ForProvider.AppNamespace
+	}
+
 	// we have to use List() because Get() returns permission error
 	var apps *argocdv1alpha1.ApplicationList
 	apps, err := e.client.List(ctx, &appQuery)
 	if err != nil {
 		return managed.ExternalObservation{}, errors.Wrap(err, errListFailed)
 	}
-	app := &argocdv1alpha1.Application{}
-	for _, item := range apps.Items {
-		if item.Name == name && item.Spec.Project == cr.Spec.ForProvider.Project {
-			app = item.DeepCopy()
-		}
+
+	if len(apps.Items) == 0 {
+		return managed.ExternalObservation{
+			ResourceExists:   false,
+			ResourceUpToDate: false,
+		}, nil
+	} else if len(apps.Items) > 1 {
+		return managed.ExternalObservation{}, errors.New("multiple applications found")
 	}
-	if app.Name == "" {
-		return managed.ExternalObservation{}, nil
-	}
+	app := &apps.Items[0]
 
 	current := cr.Spec.ForProvider.DeepCopy()
 	lateInitialize(&cr.Spec.ForProvider, app)
@@ -185,7 +193,7 @@ func (e *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 	if !ok {
 		return managed.ExternalUpdate{}, errors.New(errNotApplication)
 	}
-	updateRequest := generateUpdateRepositoryOptions(cr)
+	updateRequest := generateUpdateApplicationRequest(cr)
 	_, err := e.client.Update(ctx, updateRequest)
 	if err != nil {
 		return managed.ExternalUpdate{}, errors.Wrap(err, errUpdateFailed)
@@ -201,6 +209,13 @@ func (e *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
 	}
 	query := application.ApplicationDeleteRequest{
 		Name: clients.StringToPtr(meta.GetExternalName(cr)),
+	}
+
+	if cr.Spec.ForProvider.Project != "" {
+		query.Project = &cr.Spec.ForProvider.Project
+	}
+	if cr.Spec.ForProvider.AppNamespace != "" {
+		query.AppNamespace = &cr.Spec.ForProvider.AppNamespace
 	}
 
 	_, err := e.client.Delete(ctx, &query)
@@ -243,6 +258,10 @@ func generateCreateApplicationRequest(cr *v1alpha1.Application) *application.App
 		Spec: *spec,
 	}
 
+	if cr.Spec.ForProvider.AppNamespace != "" {
+		app.SetNamespace(cr.Spec.ForProvider.AppNamespace)
+	}
+
 	repoCreateRequest := &application.ApplicationCreateRequest{
 		Application: app,
 	}
@@ -250,7 +269,7 @@ func generateCreateApplicationRequest(cr *v1alpha1.Application) *application.App
 	return repoCreateRequest
 }
 
-func generateUpdateRepositoryOptions(cr *v1alpha1.Application) *application.ApplicationUpdateRequest {
+func generateUpdateApplicationRequest(cr *v1alpha1.Application) *application.ApplicationUpdateRequest {
 	converter := applications.ConverterImpl{}
 
 	spec := converter.ToArgoApplicationSpec(&cr.Spec.ForProvider)
@@ -263,6 +282,10 @@ func generateUpdateRepositoryOptions(cr *v1alpha1.Application) *application.Appl
 			Finalizers:  cr.Spec.ForProvider.Finalizers,
 		},
 		Spec: *spec,
+	}
+
+	if cr.Spec.ForProvider.AppNamespace != "" {
+		app.SetNamespace(cr.Spec.ForProvider.AppNamespace)
 	}
 
 	o := &application.ApplicationUpdateRequest{
